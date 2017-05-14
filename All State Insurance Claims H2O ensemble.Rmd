@@ -1,0 +1,220 @@
+---
+title: "Allstate Claims"
+date: "December 7, 2016"
+output: html_document
+---
+
+```{r}
+library(devtools)
+#install_github("h2oai/h2o-3/h2o-r/ensemble/h2oEnsemble-package")
+library(h2oEnsemble)
+
+h2o.init(nthreads = -1, max_mem_size = "5g") 
+
+train <- h2o.importFile("~/train.csv")
+test <- h2o.importFile("~/test.csv")
+
+y <- "loss"
+x <- setdiff(names(train), y)
+family <- "gaussian" 
+
+learner <- c("h2o.glm.wrapper", "h2o.randomForest.wrapper", 
+             "h2o.gbm.wrapper", "h2o.deeplearning.wrapper")
+metalearner <- "h2o.glm.wrapper"
+
+
+fit <- h2o.ensemble(x = x, y = y, 
+                    training_frame = train, 
+                    family = family, 
+                    learner = learner, 
+                    metalearner = metalearner,
+                    cvControl = list(V = 5))
+
+pred <- as.matrix(predict(fit, newdata = test))
+pred[[1]]
+
+
+submission = read.csv('~/sample_submission.csv', colClasses = c("integer", "numeric"))
+
+submission$loss = as.numeric(as.matrix(((pred[[1]]))))
+
+write.csv(submission, '1h2o_ensemble.csv', row.names=FALSE)
+
+
+```
+H2O Ensemble with customied underlying 3 models
+
+```{r}
+
+
+#Modify glm
+h2o.glm.1 <- function(..., alpha = 0.5) h2o.glm.wrapper(..., alpha = alpha)
+
+#Modify h2o.deeplearning
+h2o.deeplearning.1 <- function(..., hidden = c(500,500), activation = "Rectifier", epochs = 50, seed = 1)h2o.deeplearning.wrapper(..., hidden = hidden, activation = activation, seed = seed)
+
+#Modify h2o.randomForest
+h2o.randomForest.1 <- function(..., ntrees = 200, sample_rate = 0.85, seed = 1) h2o.randomForest.wrapper(..., ntrees = ntrees, sample_rate = sample_rate, seed = seed)
+
+#Modify gbm
+
+h2o.gbm.1 <- function(..., ntrees = 100, col_sample_rate = 0.6, seed = 1) h2o.gbm.wrapper(..., ntrees = ntrees, col_sample_rate = col_sample_rate, seed = seed)
+
+
+learner <- c("h2o.glm.wrapper",
+             "h2o.randomForest.1", "h2o.gbm.1", "h2o.glm.1" 
+             #,"h2o.deeplearning.1"
+             )
+
+fit2 <- h2o.ensemble(x = x, y = y, 
+                    training_frame = train, 
+                    family = family, 
+                    learner = learner, 
+                    metalearner = metalearner,
+                    cvControl = list(V = 5))
+
+
+pred2 <- as.matrix(predict(fit2, newdata = test))
+pred2[[1]]
+
+
+submission = read.csv('~/sample_submission.csv', colClasses = c("integer", "numeric"))
+
+submission$loss = as.numeric(as.matrix(((pred2[[1]]))))
+
+write.csv(submission, 'Modified_h2o_ensemble_PC.csv', row.names=FALSE)
+
+
+```
+
+H2O Ensemble with customied underlying 1 model and average of above and below model
+```{r}
+learner <- c("h2o.deeplearning.1")
+
+fit3 <- h2o.ensemble(x = x, y = y, 
+                     training_frame = train, 
+                     family = family, 
+                     learner = learner, 
+                     metalearner = metalearner,
+                     cvControl = list(V = 5))
+
+
+pred3 <- as.matrix(predict(fit3, newdata = test))
+pred3[[1]]
+
+
+submission = read.csv('~/sample_submission.csv', colClasses = c("integer", "numeric"))
+
+submission$loss = as.numeric(as.matrix(((pred3[[1]]))))
+
+write.csv(submission, 'Modified_h2o_ensemble_Deeplearnig_PC.csv', row.names=FALSE)
+
+#Average
+pred_avg_2_3 <- ((pred2[[1]]+pred3[[1]])/2)
+submission_avg = read.csv('~/sample_submission.csv', colClasses = c("integer", "numeric"))
+
+submission_avg$loss = as.numeric(as.matrix(((pred_avg_2_3[[1]]))))
+
+write.csv(submission, 'Avg_Modified_h2o_ensemble_PC.csv', row.names=FALSE)
+
+```
+
+H2O Ensemble with log transform
+
+```{r}
+
+par(mfrow = c(1, 2))
+
+h2o.init(nthreads = -1, max_mem_size = "5g") 
+
+train <- read.csv("~/train.csv")
+test <- read.csv("~/test.csv")
+
+hist(train$loss, xlab="Loss", main='Histogram of Loss')  #hist of loss is skewed
+
+train_log<-train
+test_log<-test
+
+train_log$loss <-log(train$loss) 
+hist(train_log$loss,xlab="Log of Loss", main='Histogram of Log of Loss')  #hist of log is pretty normal around 7
+
+#Convert cont variables and loss into log
+
+for (i in 1:14){
+  variable_name <- paste( 'cont',i, sep="")
+train_log[,variable_name] <- log(train[,variable_name])
+}
+
+for (i in 1:14){
+  variable_name <- paste( 'cont',i, sep="")
+test_log[,variable_name] <- log(test[,variable_name])
+}
+
+
+
+for (i in 1:14){
+  variable_name <- paste( 'cont',i, sep="")
+
+hist(train[,variable_name], main = paste('Histogram of ',variable_name ,sep=""),  xlab = variable_name )
+
+hist(train_log[,variable_name],  main = paste('Histogram of Log ',variable_name ,sep=""),xlab = paste('Log ',variable_name ,sep="") )
+}
+
+
+train_log$loss <- log(train$loss)
+
+train_log<-train_log[,-1]   #remove id column
+test_log<-test_log[,-1]     #remove id column
+
+#break train data into train and validation
+index<-sample(1:(dim(train)[1]), 0.3*dim(train)[1], replace=FALSE)
+
+train_log_data<-train_log[-index,]
+valid_log_data<-train_log[index,]
+
+valid_log_var<-valid_log_data[,-131]
+valid_log_loss<-valid_log_data[,131]
+
+#Convert datasets into hex for h2O
+
+train_log.h2o<-as.h2o(train_log_data)
+valid_log_data.h2o<-as.h2o(valid_log_data)
+#valid_log_var.h2o<-as.h2o(valid_log_var)
+test.h2o<-as.h2o(test_log)
+
+
+y <- "loss"
+x <- setdiff(names(train_log), y)
+family <- "gaussian" 
+
+
+
+learner <- c("h2o.glm.wrapper", "h2o.randomForest.wrapper", 
+             "h2o.gbm.wrapper", "h2o.deeplearning.wrapper")
+metalearner <- "h2o.glm.wrapper"
+
+
+fit <- h2o.ensemble(x = x, y = y, 
+                    training_frame = train_log.h2o, 
+                    validation_frame=valid_log_data.h2o,
+                    family = family, 
+                    learner = learner, 
+                    metalearner = metalearner,
+                    cvControl = list(V = 5))
+
+pred_valid <- as.matrix(predict(fit,valid_log_data.h2o))
+pred_ensemble <-exp(as.matrix(pred_valid[[1]]))
+mae_valid <- mean(abs((pred_ensemble)-valid_log_loss))
+mae_valid
+
+pred <- as.matrix(predict(fit, newdata = test.h2o))
+pred[[1]]
+
+
+submission = read.csv('~/sample_submission.csv', colClasses = c("integer", "numeric"))
+
+submission$loss = as.numeric(as.matrix((exp(pred[[1]]))))
+
+write.csv(submission, 'Log_h2o_ensemble.csv', row.names=FALSE)
+
+```
